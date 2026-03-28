@@ -31,10 +31,9 @@ jobs:
       - uses: actions/setup-node@v4
         with:
           node-version: '20'
-          cache: 'npm'
 
       - name: Install dependencies
-        run: npm ci
+        run: npm install
 
       # Builds config.yaml by injecting secrets into config.example.yaml.
       # Edit config.example.yaml in your fork to customize podcasts, music, and mix pattern.
