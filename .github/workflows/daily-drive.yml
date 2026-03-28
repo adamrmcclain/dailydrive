@@ -1,7 +1,9 @@
 name: Daily Drive
 
 on:
-  # Manual trigger with optional mode selection
+  # Manual trigger — inputs override repository variables for one-off runs.
+  # For persistent config, set PODCAST_IDS and SOURCE_PLAYLIST_ID as
+  # repository variables: Settings → Secrets and variables → Variables.
   workflow_dispatch:
     inputs:
       mode:
@@ -13,6 +15,12 @@ on:
           - full
           - podcast-only
           - dry-run
+      podcast_ids:
+        description: 'Podcast show IDs, comma-separated (overrides PODCAST_IDS variable)'
+        required: false
+      source_playlist_id:
+        description: 'Playlist ID to pull songs from (overrides SOURCE_PLAYLIST_ID variable)'
+        required: false
 
   # Scheduled runs (Monday–Friday only). GitHub Actions cron runs in UTC.
   # These are set to EST (UTC-5). During EDT (UTC-4, roughly Mar–Nov),
@@ -35,20 +43,44 @@ jobs:
       - name: Install dependencies
         run: npm install
 
-      # Builds config.yaml by injecting secrets into config.example.yaml.
-      # Edit config.example.yaml in your fork to customize podcasts, music, and mix pattern.
-      # Only SPOTIFY_CLIENT_ID, SPOTIFY_CLIENT_SECRET, and SPOTIFY_PLAYLIST_ID are injected here.
+      # Builds config.yaml from secrets + PODCAST_IDS/SOURCE_PLAYLIST_ID.
+      # For scheduled runs, set PODCAST_IDS and SOURCE_PLAYLIST_ID as repository variables.
+      # For manual runs, the workflow_dispatch inputs above override those variables.
       - name: Write config.yaml
         env:
           SPOTIFY_CLIENT_ID: ${{ secrets.SPOTIFY_CLIENT_ID }}
           SPOTIFY_CLIENT_SECRET: ${{ secrets.SPOTIFY_CLIENT_SECRET }}
           SPOTIFY_PLAYLIST_ID: ${{ secrets.SPOTIFY_PLAYLIST_ID }}
+          PODCAST_IDS: ${{ github.event.inputs.podcast_ids || vars.PODCAST_IDS }}
+          SOURCE_PLAYLIST_ID: ${{ github.event.inputs.source_playlist_id || vars.SOURCE_PLAYLIST_ID }}
         run: |
-          sed \
-            -e "s|your-client-id-here|${SPOTIFY_CLIENT_ID}|g" \
-            -e "s|your-client-secret-here|${SPOTIFY_CLIENT_SECRET}|g" \
-            -e "s|your-playlist-id-here|${SPOTIFY_PLAYLIST_ID}|g" \
-            config.example.yaml > config.yaml
+          node - <<'EOF'
+          const yaml = require('js-yaml');
+          const fs   = require('fs');
+
+          const podcastIds   = (process.env.PODCAST_IDS || '').split(',').map(s => s.trim()).filter(Boolean);
+          const sourcePlId   = (process.env.SOURCE_PLAYLIST_ID || '').trim();
+
+          const config = {
+            spotify: {
+              client_id:    process.env.SPOTIFY_CLIENT_ID,
+              client_secret: process.env.SPOTIFY_CLIENT_SECRET,
+              redirect_uri: 'http://127.0.0.1:8888/callback',
+            },
+            playlist_id: process.env.SPOTIFY_PLAYLIST_ID,
+            podcasts: podcastIds.map(id => ({ name: id, id, episodes: 1 })),
+            music: {
+              top_tracks: { enabled: true, time_range: 'short_term', count: 30 },
+              ...(sourcePlId ? { playlists: [{ name: 'Source Playlist', id: sourcePlId }] } : {}),
+              total_songs: 19,
+              shuffle: true,
+            },
+            mix_pattern: 'PMMMM',
+          };
+
+          fs.writeFileSync('config.yaml', yaml.dump(config));
+          console.log(`config.yaml written — ${podcastIds.length} podcast(s)${sourcePlId ? ', 1 source playlist' : ''}`);
+          EOF
 
       # Writes the token file using your stored refresh token.
       # expires_at is set to 0 so index.js always refreshes the access token on startup.
